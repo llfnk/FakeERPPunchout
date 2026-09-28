@@ -1,0 +1,8 @@
+# Local settings with partner credentials — never committed
+.env
+.env.*
+!.env.example
+
+.DS_Store
+.idea
+node_modules

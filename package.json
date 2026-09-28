@@ -1,0 +1,13 @@
+{
+  "name": "merida-punchout-hu-fake-erp",
+  "version": "1.0.0",
+  "description": "Fake buyer ERP for Merida PunchOut HU: cXML PunchOutSetupRequest, StartPage in a cross-site iframe, PunchOutOrderMessage back",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.9"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.mjs"
+  }
+}
