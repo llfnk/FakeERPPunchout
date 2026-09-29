@@ -216,7 +216,7 @@ function homePage(session, latest) {
   let result = ''
   if (latest) {
     const opened = latest.startPage && settings.open === 'iframe'
-      ? `<iframe title="Merida catalog" src="${html(latest.startPage)}"></iframe>`
+      ? `<iframe title="Catalog" src="${html(latest.startPage)}"></iframe>`
       : ''
     const openNow = latest.startPage && settings.open !== 'iframe'
       ? `<script>${settings.open === 'tab' ? `window.open(${JSON.stringify(latest.startPage)}, '_blank')` : `location.href = ${JSON.stringify(latest.startPage)}`}</script>
@@ -228,9 +228,9 @@ function homePage(session, latest) {
       ${openNow}
       ${exchangeDetails(latest)}
     </section>
-    ${opened ? `<section><h2>Merida catalog — BuyerCookie <code>${html(latest.buyerCookie)}</code></h2>${opened}</section>` : ''}`
+    ${opened ? `<section><h2>Catalog — BuyerCookie <code>${html(latest.buyerCookie)}</code></h2>${opened}</section>` : ''}`
   }
-  return page('Fake ERP', `${header(session, 'Fake ERP — PunchOut to Merida')}
+  return page('Fake ERP', `${header(session, 'Fake ERP')}
     <main>
       <section><h2>PunchOutSetupRequest</h2>${settingsForm(session)}</section>
       ${result}
