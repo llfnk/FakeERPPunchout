@@ -40,8 +40,21 @@ Every setting except the secret's source can be changed on the page between setu
 | `ERP_START_ORIGIN` | empty | Open the StartPage on another origin, e.g. `http://localhost:3001` to run a local catalog against the backend |
 | `ERP_PORT` | `8095` | |
 | `ERP_PUBLIC_URL` | `http://lvh.me:<port>` | This tool's own address, used for the `BrowserFormPost` URL |
+| `ERP_BASIC_AUTH` | empty | `user:password` for HTTP Basic auth on every page but `/return` and `/health`; empty = no auth |
 
 Use a partner credential with purpose `catalog` or `both` (backoffice: partner → credentials, where the SharedSecret can be revealed).
+
+## Deploying (Coolify)
+
+The repository has a `Dockerfile` (Node 22 Alpine, no dependencies, runs as `node`, `HEALTHCHECK` on `/health`).
+
+1. New resource → the Git repository → build pack **Dockerfile**.
+2. Ports exposes: `8095`; set the domain, e.g. `https://fake-erp.example.com`.
+3. Environment variables: `ERP_PUBLIC_URL` = that domain (the catalog posts the cart back to `<ERP_PUBLIC_URL>/return`), `ERP_BASIC_AUTH`, and the partner credential (`ERP_FROM`, `ERP_SHARED_SECRET`, …) as in the table above.
+
+Always set `ERP_BASIC_AUTH` on a public deployment: whoever opens the page can change the backend URL, and the setup posts the configured `SharedSecret` there. `/return` stays open so the catalog's form post always lands; `/health` stays open for the health check.
+
+A public domain is its own site, so the iframe runs cross-site just as with `lvh.me`. History is still in memory (the last 200 setups) — a redeploy forgets it.
 
 ## Against the mock
 

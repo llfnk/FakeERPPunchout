@@ -1,0 +1,6 @@
+.env
+.env.*
+.git
+.idea
+.DS_Store
+node_modules

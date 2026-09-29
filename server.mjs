@@ -14,10 +14,14 @@
  * The SharedSecret is never written into the page: the request shown there has it masked.
  */
 import { createServer } from 'node:http'
-import { randomBytes, randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 
-const PORT = Number(process.env.ERP_PORT ?? 8095)
-const PUBLIC_URL = process.env.ERP_PUBLIC_URL ?? `http://lvh.me:${PORT}`
+// `||`, not `??`: a deployment (Coolify, Docker) may pass these as empty strings
+const PORT = Number(process.env.ERP_PORT || 8095)
+const PUBLIC_URL = (process.env.ERP_PUBLIC_URL || `http://lvh.me:${PORT}`).replace(/\/+$/, '')
+/** `user:password` for HTTP Basic auth on every page but /return and /health; empty = no auth (local use). */
+const BASIC_AUTH = process.env.ERP_BASIC_AUTH || ''
+const HISTORY_LIMIT = 200
 
 /** The last settings used; the secret stays here and never goes into a page. */
 const settings = {
@@ -242,6 +246,7 @@ async function runSetup(form) {
     request: settings.secret ? xml.replace(`<SharedSecret>${esc(settings.secret)}</SharedSecret>`, '<SharedSecret>••••••••</SharedSecret>') : xml,
   }
   history.unshift(entry)
+  history.length = Math.min(history.length, HISTORY_LIMIT)
 
   try {
     const answer = await fetch(setupUrl(settings), { method: 'POST', headers: { 'Content-Type': 'text/xml; charset=utf-8' }, body: xml, signal: AbortSignal.timeout(20_000) })
@@ -264,9 +269,27 @@ async function runSetup(form) {
   return entry
 }
 
+const digest = value => createHash('sha256').update(value).digest()
+
+/** Anyone who can open the page can change the backend URL and have the secret posted there, so a public deployment needs auth. */
+function authorized(req) {
+  if (!BASIC_AUTH) return true
+  const [scheme, token] = (req.headers.authorization ?? '').split(' ')
+  if (scheme !== 'Basic' || !token) return false
+  return timingSafeEqual(digest(Buffer.from(token, 'base64').toString('utf8')), digest(BASIC_AUTH))
+}
+
 createServer(async (req, res) => {
   const url = new URL(req.url, PUBLIC_URL)
   try {
+    if (url.pathname === '/health') return send(res, 200, 'ok', 'text/plain; charset=utf-8')
+
+    // /return stays open: the catalog's form post must land even if the browser does not resend credentials
+    if (url.pathname !== '/return' && !authorized(req)) {
+      res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="Fake ERP", charset="UTF-8"', 'Content-Type': 'text/plain; charset=utf-8' })
+      return res.end('Authentication required')
+    }
+
     if (req.method === 'GET' && url.pathname === '/') return send(res, 200, homePage(null))
 
     if (req.method === 'POST' && url.pathname === '/setup') {
@@ -285,6 +308,7 @@ createServer(async (req, res) => {
       if (!entry) {
         entry = { at: new Date().toISOString(), buyerCookie: cookie || '(none)', request: '', status: '—', statusText: 'setup not from this run' }
         history.unshift(entry)
+        history.length = Math.min(history.length, HISTORY_LIMIT)
       }
       entry.returned = { at: new Date().toISOString(), field, xml }
       res.writeHead(303, { Location: `/order/${encodeURIComponent(entry.buyerCookie)}` })
