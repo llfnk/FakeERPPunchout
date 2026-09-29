@@ -6,9 +6,12 @@
  *   1. posts a cXML PunchOutSetupRequest to the backend (POST /cxml/setup or /cxml/setup/{partner});
  *   2. reads the StartPage URL from the PunchOutSetupResponse and opens the catalog on it — in an
  *      iframe on this page (cross-site, like Ariba) or in a new tab;
- *   3. receives the cart back: the catalog posts the PunchOutOrderMessage to /return.
+ *   3. receives the cart back: the catalog posts the PunchOutOrderMessage to /s/{session}/return.
  *
  *   npm start                          # then open http://lvh.me:8095
+ *
+ * Several people can use one instance: each gets a session (/s/{uuid}) with its own settings and
+ * history, and a cart is taken only by the session whose setup asked for it.
  *
  * Settings come from the environment (npm start reads .env) and can all be changed on the page, the
  * SharedSecret too. See README.md for every ERP_* variable. The request shown on the page has it masked.
@@ -20,12 +23,14 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypt
 // Coolify sets PORT (its proxy's target port) and COOLIFY_URL (the app's domains, comma-separated).
 const PORT = Number(process.env.ERP_PORT || process.env.PORT || 8095)
 const PUBLIC_URL = (process.env.ERP_PUBLIC_URL || process.env.COOLIFY_URL?.split(',')[0] || `http://lvh.me:${PORT}`).trim().replace(/\/+$/, '')
-/** `user:password` for HTTP Basic auth on every page but /return and /health; empty = no auth (local use). */
+/** `user:password` for HTTP Basic auth on every page but the return URLs and /health; empty = no auth (local use). */
 const BASIC_AUTH = process.env.ERP_BASIC_AUTH || ''
-const HISTORY_LIMIT = 200
+const HISTORY_LIMIT = 50
+const SESSION_LIMIT = 500
+const SESSION_COOKIE = 'fake_erp_session'
 
-/** The last settings used; the form starts from them. */
-const settings = {
+/** What a new session's form starts from. */
+const defaults = {
   apiUrl: process.env.ERP_API_URL ?? '',
   partnerUuid: process.env.ERP_PARTNER_UUID ?? '',
   domain: process.env.ERP_DOMAIN ?? 'NetworkId',
@@ -41,15 +46,40 @@ const settings = {
   open: 'iframe',
 }
 
-/** Setups sent, newest first: what was asked, what came back, and the cart returned for it. */
-const history = []
+/**
+ * Sessions by uuid, least recently used first. Each has the settings last used (the form starts from
+ * them) and the setups sent, newest first: what was asked, what came back, and the cart returned for it.
+ */
+const sessions = new Map()
+
+function createSession() {
+  const session = { id: randomUUID(), settings: { ...defaults }, history: [] }
+  sessions.set(session.id, session)
+  if (sessions.size > SESSION_LIMIT) sessions.delete(sessions.keys().next().value)
+  return session
+}
+
+function findSession(id) {
+  const session = sessions.get(id)
+  if (!session) return null
+  sessions.delete(id)
+  sessions.set(id, session)
+  return session
+}
+
+function remember(session, entry) {
+  session.history.unshift(entry)
+  session.history.length = Math.min(session.history.length, HISTORY_LIMIT)
+}
+
+const sessionPath = session => `/s/${session.id}`
 
 // ---------- cXML ----------
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[c])
 const html = esc
 
-function setupRequest(s, buyerCookie) {
+function setupRequest(s, buyerCookie, returnUrl) {
   const credential = (domain, identity, secret) =>
     `<Credential domain="${esc(domain)}"><Identity>${esc(identity)}</Identity>${secret === undefined ? '' : `<SharedSecret>${esc(secret)}</SharedSecret>`}</Credential>`
   const froms = [credential(s.domain, s.from), ...(s.duns ? [credential('DUNS', s.duns)] : [])].join('\n      ')
@@ -74,7 +104,7 @@ function setupRequest(s, buyerCookie) {
       <Extrinsic name="UserEmail">${esc(s.userEmail)}</Extrinsic>
       <Extrinsic name="UniqueName">${esc(s.userEmail)}</Extrinsic>
       <Extrinsic name="UserFullName">${esc(s.userName)}</Extrinsic>
-      <BrowserFormPost><URL>${esc(`${PUBLIC_URL}/return`)}</URL></BrowserFormPost>
+      <BrowserFormPost><URL>${esc(returnUrl)}</URL></BrowserFormPost>
       <Contact role="endUser">
         <Name xml:lang="en">${esc(s.userName)}</Name>
         <Email>${esc(s.userEmail)}</Email>
@@ -134,10 +164,16 @@ const page = (title, body) => `<!doctype html><html lang="en"><head><meta charse
   iframe { display: block; width: 100%; height: 80vh; border: 1px solid #c8d1db; border-radius: 6px; background: #fff; }
 </style></head><body>${body}</body></html>`
 
-function settingsForm() {
-  const s = settings
+const returnUrl = session => `${PUBLIC_URL}${sessionPath(session)}/return`
+
+const header = (session, title) => `<header><strong>${html(title)}</strong>
+  <span class="hint">session <code>${html(session.id)}</code></span>
+  <a href="${sessionPath(session)}">new setup</a><a href="/new">new session</a></header>`
+
+function settingsForm(session) {
+  const s = session.settings
   const field = (name, label, value, extra = '') => `<label>${html(label)}<input name="${name}" value="${html(value)}" ${extra}></label>`
-  return `<form class="settings" method="post" action="/setup">
+  return `<form class="settings" method="post" action="${sessionPath(session)}/setup">
     ${field('apiUrl', 'Backend (API origin)', s.apiUrl, 'required')}
     ${field('partnerUuid', 'Partner uuid — empty = shared /cxml/setup', s.partnerUuid)}
     ${field('domain', 'Credential domain', s.domain)}
@@ -153,21 +189,21 @@ function settingsForm() {
     <label>Open the catalog<select name="open">${[['iframe', 'in an iframe on this page (like Ariba)'], ['tab', 'in a new tab'], ['window', 'in this window']].map(([v, t]) => `<option value="${v}"${v === s.open ? ' selected' : ''}>${t}</option>`).join('')}</select></label>
     <div class="actions">
       <button type="submit">Send PunchOutSetupRequest</button>
-      <span class="hint">Goes to <code>${html(setupUrl(s))}</code>; the cart comes back to <code>${html(PUBLIC_URL)}/return</code>.</span>
+      <span class="hint">Goes to <code>${html(setupUrl(s))}</code>; the cart comes back to <code>${html(returnUrl(session))}</code>.</span>
     </div>
   </form>`
 }
 
-function historySection() {
-  if (!history.length) return ''
-  const rows = history.map(h => `<tr>
+function historySection(session) {
+  if (!session.history.length) return ''
+  const rows = session.history.map(h => `<tr>
       <td>${html(h.at.slice(11, 19))}</td>
       <td class="${h.status === '200' ? 'ok' : 'bad'}">${html(h.status ?? h.error ?? '—')} ${html(h.statusText ?? '')}</td>
       <td><code>${html(h.buyerCookie)}</code></td>
       <td>${h.startPage ? `<a href="${html(h.startPage)}" target="_blank" rel="noopener">StartPage</a>` : '—'}</td>
-      <td>${h.returned ? `<a href="/order/${html(h.buyerCookie)}">cart returned ${html(h.returned.at.slice(11, 19))}</a>` : '—'}</td>
+      <td>${h.returned ? `<a href="${sessionPath(session)}/order/${html(encodeURIComponent(h.buyerCookie))}">cart returned ${html(h.returned.at.slice(11, 19))}</a>` : '—'}</td>
     </tr>`).join('')
-  return `<section><h2>Setups this run</h2><table><thead><tr><th>At</th><th>Status</th><th>BuyerCookie</th><th>Catalog</th><th>Cart</th></tr></thead><tbody>${rows}</tbody></table></section>`
+  return `<section><h2>Setups in this session</h2><table><thead><tr><th>At</th><th>Status</th><th>BuyerCookie</th><th>Catalog</th><th>Cart</th></tr></thead><tbody>${rows}</tbody></table></section>`
 }
 
 function exchangeDetails(h) {
@@ -175,7 +211,8 @@ function exchangeDetails(h) {
     <details${h.status === '200' ? '' : ' open'}><summary>Answer (HTTP ${html(h.httpStatus ?? '—')})</summary><pre>${html(h.response ?? h.error ?? '')}</pre></details>`
 }
 
-function homePage(latest) {
+function homePage(session, latest) {
+  const settings = session.settings
   let result = ''
   if (latest) {
     const opened = latest.startPage && settings.open === 'iframe'
@@ -193,21 +230,21 @@ function homePage(latest) {
     </section>
     ${opened ? `<section><h2>Merida catalog — BuyerCookie <code>${html(latest.buyerCookie)}</code></h2>${opened}</section>` : ''}`
   }
-  return page('Fake ERP', `<header><strong>Fake ERP — PunchOut to Merida</strong><a href="/">new setup</a></header>
+  return page('Fake ERP', `${header(session, 'Fake ERP — PunchOut to Merida')}
     <main>
-      <section><h2>PunchOutSetupRequest</h2>${settingsForm()}</section>
+      <section><h2>PunchOutSetupRequest</h2>${settingsForm(session)}</section>
       ${result}
-      ${historySection()}
+      ${historySection(session)}
     </main>`)
 }
 
-function orderPage(h) {
+function orderPage(session, h) {
   const r = h.returned
   const lines = orderLines(r.xml)
   const total = tag(tag(r.xml, 'Total') ?? '', 'Money')
   const cookie = unescapeXml(tag(r.xml, 'BuyerCookie'))
   const rows = lines.map(l => `<tr><td><code>${html(l.sku)}</code></td><td>${html(l.description)}</td><td class="num">${html(l.quantity)}</td><td>${html(l.unit)}</td><td class="num">${html(l.price)} ${html(l.currency)}</td></tr>`).join('')
-  return page('Fake ERP — cart received', `<header><strong>Fake ERP — cart received</strong><a href="/">new setup</a></header>
+  return page('Fake ERP — cart received', `${header(session, 'Fake ERP — cart received')}
     <main><section>
       <h2>PunchOutOrderMessage</h2>
       <p>Received ${html(r.at)} in field <code>${html(r.field)}</code>, posted to the top window.
@@ -215,7 +252,7 @@ function orderPage(h) {
       <table><thead><tr><th>SKU</th><th>Description</th><th>Qty</th><th>Unit</th><th>Unit price (net)</th></tr></thead><tbody>${rows || '<tr><td colspan="5">No ItemIn lines</td></tr>'}</tbody></table>
       <p>Total (net): <strong>${html(total ?? '—')}</strong></p>
       <details open><summary>cXML</summary><pre>${html(r.xml)}</pre></details>
-    </section>${historySection()}</main>`)
+    </section>${historySection(session)}</main>`)
 }
 
 // ---------- server ----------
@@ -231,21 +268,21 @@ function send(res, status, body, type = 'text/html; charset=utf-8') {
   res.end(body)
 }
 
-async function runSetup(form) {
+async function runSetup(session, form) {
+  const settings = session.settings
   for (const key of Object.keys(settings)) {
     // the secret is taken as typed: surrounding spaces may be part of it
     if (form.has(key)) settings[key] = key === 'secret' ? form.get(key) : form.get(key).trim()
   }
 
   const buyerCookie = `FAKE-ERP-${randomUUID()}`
-  const xml = setupRequest(settings, buyerCookie)
+  const xml = setupRequest(settings, buyerCookie, returnUrl(session))
   const entry = {
     at: new Date().toISOString(),
     buyerCookie,
     request: settings.secret ? xml.replace(`<SharedSecret>${esc(settings.secret)}</SharedSecret>`, '<SharedSecret>••••••••</SharedSecret>') : xml,
   }
-  history.unshift(entry)
-  history.length = Math.min(history.length, HISTORY_LIMIT)
+  remember(session, entry)
 
   try {
     const answer = await fetch(setupUrl(settings), { method: 'POST', headers: { 'Content-Type': 'text/xml; charset=utf-8' }, body: xml, signal: AbortSignal.timeout(20_000) })
@@ -278,52 +315,74 @@ function authorized(req) {
   return timingSafeEqual(digest(Buffer.from(token, 'base64').toString('utf8')), digest(BASIC_AUTH))
 }
 
+function notFound(res, message) {
+  send(res, 404, page('Not found', `<header><strong>Fake ERP</strong><a href="/new">new session</a></header><main><section>${html(message)}</section></main>`))
+}
+
+function openSession(res, session) {
+  res.writeHead(303, { Location: sessionPath(session), 'Set-Cookie': `${SESSION_COOKIE}=${session.id}; Path=/; HttpOnly; SameSite=Lax` })
+  res.end()
+}
+
+const cookie = (req, name) => (req.headers.cookie ?? '').split(/;\s*/).find(c => c.startsWith(`${name}=`))?.slice(name.length + 1)
+
 createServer(async (req, res) => {
   const url = new URL(req.url, PUBLIC_URL)
   try {
     if (url.pathname === '/health') return send(res, 200, 'ok', 'text/plain; charset=utf-8')
 
-    // /return stays open: the catalog's form post must land even if the browser does not resend credentials
-    if (url.pathname !== '/return' && !authorized(req)) {
+    const [, id, rest = ''] = url.pathname.match(/^\/s\/([0-9a-f-]{36})(\/.*)?$/) ?? []
+
+    // The return URL stays open: the catalog's form post must land even if the browser does not resend credentials
+    const isReturn = id && rest === '/return'
+    if (!isReturn && !authorized(req)) {
       res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="Fake ERP", charset="UTF-8"', 'Content-Type': 'text/plain; charset=utf-8' })
       return res.end('Authentication required')
     }
 
-    if (req.method === 'GET' && url.pathname === '/') return send(res, 200, homePage(null))
+    // The browser's last session, while the server still has it; else a new one
+    if (req.method === 'GET' && url.pathname === '/') return openSession(res, findSession(cookie(req, SESSION_COOKIE)) ?? createSession())
+    if (req.method === 'GET' && url.pathname === '/new') return openSession(res, createSession())
 
-    if (req.method === 'POST' && url.pathname === '/setup') {
-      const entry = await runSetup(new URLSearchParams(await readBody(req)))
-      return send(res, 200, homePage(entry))
+    if (!id) return notFound(res, 'Not found.')
+    const session = findSession(id)
+    if (!session) return notFound(res, 'No such session — it expired or the server restarted. Start a new one.')
+
+    if (req.method === 'GET' && rest === '') return send(res, 200, homePage(session, null))
+
+    if (req.method === 'POST' && rest === '/setup') {
+      const entry = await runSetup(session, new URLSearchParams(await readBody(req)))
+      return send(res, 200, homePage(session, entry))
     }
 
     // The catalog posts the cart here (BrowserFormPost), target="_top"
-    if (req.method === 'POST' && url.pathname === '/return') {
+    if (req.method === 'POST' && isReturn) {
       const form = new URLSearchParams(await readBody(req))
       const field = form.has('cxml-base64') ? 'cxml-base64' : 'cxml-urlencoded'
       const raw = form.get(field) ?? ''
       const xml = field === 'cxml-base64' ? Buffer.from(raw, 'base64').toString('utf8') : raw
-      const cookie = unescapeXml(tag(xml, 'BuyerCookie'))
-      let entry = history.find(h => h.buyerCookie === cookie)
+      const buyerCookie = unescapeXml(tag(xml, 'BuyerCookie'))
+      // A cart whose BuyerCookie no setup of this session sent is kept here too, flagged, to show the catalog's mistake
+      let entry = session.history.find(h => h.buyerCookie === buyerCookie)
       if (!entry) {
-        entry = { at: new Date().toISOString(), buyerCookie: cookie || '(none)', request: '', status: '—', statusText: 'setup not from this run' }
-        history.unshift(entry)
-        history.length = Math.min(history.length, HISTORY_LIMIT)
+        entry = { at: new Date().toISOString(), buyerCookie: buyerCookie || '(none)', request: '', status: '—', statusText: 'no setup of this session sent this BuyerCookie' }
+        remember(session, entry)
       }
       entry.returned = { at: new Date().toISOString(), field, xml }
-      res.writeHead(303, { Location: `/order/${encodeURIComponent(entry.buyerCookie)}` })
+      res.writeHead(303, { Location: `${sessionPath(session)}/order/${encodeURIComponent(entry.buyerCookie)}` })
       return res.end()
     }
 
-    const order = url.pathname.match(/^\/order\/(.+)$/)
+    const order = rest.match(/^\/order\/(.+)$/)
     if (req.method === 'GET' && order) {
-      const entry = history.find(h => h.buyerCookie === decodeURIComponent(order[1]) && h.returned)
-      return entry ? send(res, 200, orderPage(entry)) : send(res, 404, page('Not found', '<main><section>No cart for this BuyerCookie.</section></main>'))
+      const entry = session.history.find(h => h.buyerCookie === decodeURIComponent(order[1]) && h.returned)
+      return entry ? send(res, 200, orderPage(session, entry)) : notFound(res, 'No cart for this BuyerCookie in this session.')
     }
 
-    send(res, 404, page('Not found', '<main><section>Not found. <a href="/">Back</a></section></main>'))
+    notFound(res, 'Not found.')
   } catch (error) {
     send(res, 500, page('Error', `<main><section><pre>${html(error.stack)}</pre></section></main>`))
   }
 }).listen(PORT, () => {
-  console.log(`fake ERP on ${PUBLIC_URL} — setup goes to ${setupUrl(settings)}${settings.secret ? '' : ' (no ERP_SHARED_SECRET yet)'}`)
+  console.log(`fake ERP on ${PUBLIC_URL} — setup goes to ${setupUrl(defaults)}${defaults.secret ? '' : ' (no ERP_SHARED_SECRET yet)'}`)
 })

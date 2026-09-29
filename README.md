@@ -12,11 +12,17 @@ npm start
 
 ## What it does
 
-1. **PunchOutSetupRequest.** Posts a cXML `PunchOutSetupRequest` to the backend: `POST /cxml/setup` (the shared URL, the credentials pick the partner) or `POST /cxml/setup/{partner uuid}`. It carries the From and Sender credentials with the `SharedSecret`, an optional DUNS as a second From credential, the operator (`UserEmail`, `UserFullName`), a fresh `BuyerCookie` and this tool's `/return` as the `BrowserFormPost` URL. The request goes from this server, not the browser, so the backend's CORS does not matter.
+1. **PunchOutSetupRequest.** Posts a cXML `PunchOutSetupRequest` to the backend: `POST /cxml/setup` (the shared URL, the credentials pick the partner) or `POST /cxml/setup/{partner uuid}`. It carries the From and Sender credentials with the `SharedSecret`, an optional DUNS as a second From credential, the operator (`UserEmail`, `UserFullName`), a fresh `BuyerCookie` and the session's `/s/{session}/return` as the `BrowserFormPost` URL. The request goes from this server, not the browser, so the backend's CORS does not matter.
 2. **StartPage.** Reads the `<StartPage>` URL from the `PunchOutSetupResponse` and opens the catalog on it — in an iframe on its page (like Ariba), in a new tab or in the same window. The page shows the request sent, with the `SharedSecret` masked, next to the raw answer, so a refusal (`401` for credentials, `400` for a malformed document) is visible as the backend wrote it.
-3. **PunchOutOrderMessage.** The catalog posts the cart back to `/return` (`cxml-urlencoded` or `cxml-base64`). The tool shows its lines, the total and whether its `BuyerCookie` matches the setup; the list of setups links every setup to the cart it got back.
+3. **PunchOutOrderMessage.** The catalog posts the cart back to `/s/{session}/return` (`cxml-urlencoded` or `cxml-base64`). The tool shows its lines, the total and whether its `BuyerCookie` matches the setup; the list of setups links every setup to the cart it got back.
 
 Every setting, the `SharedSecret` included, can be filled in or changed on the page between setups; the environment only gives the starting values.
+
+## Sessions
+
+Several people can use one instance. Opening `/` starts a session with its own uuid (`/s/{uuid}`) and its own settings and list of setups; the browser keeps it in a cookie, so `/` brings it back, and `/new` always starts another. The return URL carries the session: a cart posted to `/s/{uuid}/return` lands only in that session, one for an unknown session gets `404`. A cart whose `BuyerCookie` no setup of the session sent is still kept there, flagged, to show the catalog's mistake.
+
+Sessions live in memory (the last 500 used, 50 setups each); a restart forgets them.
 
 ## Why lvh.me
 
@@ -40,7 +46,7 @@ Every setting, the `SharedSecret` included, can be filled in or changed on the p
 | `ERP_START_ORIGIN` | empty | Open the StartPage on another origin, e.g. `http://localhost:3001` to run a local catalog against the backend |
 | `ERP_PORT` | `PORT`, else `8095` | |
 | `ERP_PUBLIC_URL` | `COOLIFY_URL`, else `http://lvh.me:<port>` | This tool's own address, used for the `BrowserFormPost` URL |
-| `ERP_BASIC_AUTH` | empty | `user:password` for HTTP Basic auth on every page but `/return` and `/health`; empty = no auth |
+| `ERP_BASIC_AUTH` | empty | `user:password` for HTTP Basic auth on every page but the return URLs (`/s/{session}/return`) and `/health`; empty = no auth |
 
 Use a partner credential with purpose `catalog` or `both` (backoffice: partner → credentials, where the SharedSecret can be revealed).
 
@@ -49,12 +55,12 @@ Use a partner credential with purpose `catalog` or `both` (backoffice: partner �
 The repository has a `Dockerfile` (Node 22 Alpine, no dependencies, runs as `node`, `HEALTHCHECK` on `/health`).
 
 1. New resource → the Git repository → build pack **Dockerfile**.
-2. Set the domain, e.g. `https://fake-erp.example.com`. The port and the public address need no setting: the server listens on the `PORT` Coolify passes (its "Ports Exposes", `3000` by default) and takes its address from `COOLIFY_URL` — the catalog posts the cart back to `<that address>/return`.
+2. Set the domain, e.g. `https://fake-erp.example.com`. The port and the public address need no setting: the server listens on the `PORT` Coolify passes (its "Ports Exposes", `3000` by default) and takes its address from `COOLIFY_URL` — the catalog posts the cart back to `<that address>/s/{session}/return`.
 3. Environment variables: `ERP_BASIC_AUTH`. The partner credential (`ERP_FROM`, `ERP_SHARED_SECRET`, …) is optional there — it only prefills the form.
 
-Always set `ERP_BASIC_AUTH` on a public deployment: whoever opens the page sees the `SharedSecret` in its form and can change the backend URL the setup posts it to. `/return` stays open so the catalog's form post always lands; `/health` stays open for the health check.
+Always set `ERP_BASIC_AUTH` on a public deployment: whoever opens the page sees the `SharedSecret` in its form and can change the backend URL the setup posts it to. The return URLs stay open so the catalog's form post always lands (the session's uuid in them is not guessable); `/health` stays open for the health check.
 
-A public domain is its own site, so the iframe runs cross-site just as with `lvh.me`. History is still in memory (the last 200 setups) — a redeploy forgets it.
+A public domain is its own site, so the iframe runs cross-site just as with `lvh.me`. Sessions are still in memory — a redeploy forgets them.
 
 ## Against the mock
 
@@ -73,4 +79,4 @@ The mock accepts any credentials unless it runs with `MOCK_SHARED_SECRET`.
 
 ## What it is not
 
-A test tool. The cXML it sends has the shape a procurement system's has, not every field Ariba or SAP send, and it keeps its history in memory only — a restart forgets it.
+A test tool. The cXML it sends has the shape a procurement system's has, not every field Ariba or SAP send, and it keeps its sessions in memory only — a restart forgets them.
