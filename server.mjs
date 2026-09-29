@@ -16,9 +16,10 @@
 import { createServer } from 'node:http'
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 
-// `||`, not `??`: a deployment (Coolify, Docker) may pass these as empty strings
-const PORT = Number(process.env.ERP_PORT || 8095)
-const PUBLIC_URL = (process.env.ERP_PUBLIC_URL || `http://lvh.me:${PORT}`).replace(/\/+$/, '')
+// `||`, not `??`: a deployment (Coolify, Docker) may pass these as empty strings.
+// Coolify sets PORT (its proxy's target port) and COOLIFY_URL (the app's domains, comma-separated).
+const PORT = Number(process.env.ERP_PORT || process.env.PORT || 8095)
+const PUBLIC_URL = (process.env.ERP_PUBLIC_URL || process.env.COOLIFY_URL?.split(',')[0] || `http://lvh.me:${PORT}`).trim().replace(/\/+$/, '')
 /** `user:password` for HTTP Basic auth on every page but /return and /health; empty = no auth (local use). */
 const BASIC_AUTH = process.env.ERP_BASIC_AUTH || ''
 const HISTORY_LIMIT = 200

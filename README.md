@@ -38,8 +38,8 @@ Every setting, the `SharedSecret` included, can be filled in or changed on the p
 | `ERP_TO` | — | To identity |
 | `ERP_USER_EMAIL`, `ERP_USER_NAME` | test buyer | The operator the session records |
 | `ERP_START_ORIGIN` | empty | Open the StartPage on another origin, e.g. `http://localhost:3001` to run a local catalog against the backend |
-| `ERP_PORT` | `8095` | |
-| `ERP_PUBLIC_URL` | `http://lvh.me:<port>` | This tool's own address, used for the `BrowserFormPost` URL |
+| `ERP_PORT` | `PORT`, else `8095` | |
+| `ERP_PUBLIC_URL` | `COOLIFY_URL`, else `http://lvh.me:<port>` | This tool's own address, used for the `BrowserFormPost` URL |
 | `ERP_BASIC_AUTH` | empty | `user:password` for HTTP Basic auth on every page but `/return` and `/health`; empty = no auth |
 
 Use a partner credential with purpose `catalog` or `both` (backoffice: partner → credentials, where the SharedSecret can be revealed).
@@ -49,8 +49,8 @@ Use a partner credential with purpose `catalog` or `both` (backoffice: partner �
 The repository has a `Dockerfile` (Node 22 Alpine, no dependencies, runs as `node`, `HEALTHCHECK` on `/health`).
 
 1. New resource → the Git repository → build pack **Dockerfile**.
-2. Ports exposes: `8095`; set the domain, e.g. `https://fake-erp.example.com`.
-3. Environment variables: `ERP_PUBLIC_URL` = that domain (the catalog posts the cart back to `<ERP_PUBLIC_URL>/return`) and `ERP_BASIC_AUTH`. The partner credential (`ERP_FROM`, `ERP_SHARED_SECRET`, …) is optional there — it only prefills the form.
+2. Set the domain, e.g. `https://fake-erp.example.com`. The port and the public address need no setting: the server listens on the `PORT` Coolify passes (its "Ports Exposes", `3000` by default) and takes its address from `COOLIFY_URL` — the catalog posts the cart back to `<that address>/return`.
+3. Environment variables: `ERP_BASIC_AUTH`. The partner credential (`ERP_FROM`, `ERP_SHARED_SECRET`, …) is optional there — it only prefills the form.
 
 Always set `ERP_BASIC_AUTH` on a public deployment: whoever opens the page sees the `SharedSecret` in its form and can change the backend URL the setup posts it to. `/return` stays open so the catalog's form post always lands; `/health` stays open for the health check.
 
