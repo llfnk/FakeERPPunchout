@@ -16,7 +16,7 @@ npm start
 2. **StartPage.** Reads the `<StartPage>` URL from the `PunchOutSetupResponse` and opens the catalog on it — in an iframe on its page (like Ariba), in a new tab or in the same window. The page shows the request sent, with the `SharedSecret` masked, next to the raw answer, so a refusal (`401` for credentials, `400` for a malformed document) is visible as the backend wrote it.
 3. **PunchOutOrderMessage.** The catalog posts the cart back to `/return` (`cxml-urlencoded` or `cxml-base64`). The tool shows its lines, the total and whether its `BuyerCookie` matches the setup; the list of setups links every setup to the cart it got back.
 
-Every setting except the secret's source can be changed on the page between setups.
+Every setting, the `SharedSecret` included, can be filled in or changed on the page between setups; the environment only gives the starting values.
 
 ## Why lvh.me
 
@@ -24,7 +24,7 @@ Every setting except the secret's source can be changed on the page between setu
 
 ## Settings
 
-`npm start` reads `.env` (git-ignored). Keep partner credentials there; `.env.example` lists every variable.
+`npm start` reads `.env` (git-ignored). Keep partner credentials there, or leave them out and fill them in on the page; `.env.example` lists every variable.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -33,7 +33,7 @@ Every setting except the secret's source can be changed on the page between setu
 | `ERP_DOMAIN` | `NetworkId` | Credential domain of From and Sender |
 | `ERP_FROM` | — | From identity |
 | `ERP_SENDER` | = From | Sender identity |
-| `ERP_SHARED_SECRET` | — | The credential's SharedSecret (can also be typed on the page; never shown back) |
+| `ERP_SHARED_SECRET` | — | The credential's SharedSecret (can also be filled in on the page) |
 | `ERP_DUNS` | empty | Sent as a second From credential, domain `DUNS` |
 | `ERP_TO` | — | To identity |
 | `ERP_USER_EMAIL`, `ERP_USER_NAME` | test buyer | The operator the session records |
@@ -50,9 +50,9 @@ The repository has a `Dockerfile` (Node 22 Alpine, no dependencies, runs as `nod
 
 1. New resource → the Git repository → build pack **Dockerfile**.
 2. Ports exposes: `8095`; set the domain, e.g. `https://fake-erp.example.com`.
-3. Environment variables: `ERP_PUBLIC_URL` = that domain (the catalog posts the cart back to `<ERP_PUBLIC_URL>/return`), `ERP_BASIC_AUTH`, and the partner credential (`ERP_FROM`, `ERP_SHARED_SECRET`, …) as in the table above.
+3. Environment variables: `ERP_PUBLIC_URL` = that domain (the catalog posts the cart back to `<ERP_PUBLIC_URL>/return`) and `ERP_BASIC_AUTH`. The partner credential (`ERP_FROM`, `ERP_SHARED_SECRET`, …) is optional there — it only prefills the form.
 
-Always set `ERP_BASIC_AUTH` on a public deployment: whoever opens the page can change the backend URL, and the setup posts the configured `SharedSecret` there. `/return` stays open so the catalog's form post always lands; `/health` stays open for the health check.
+Always set `ERP_BASIC_AUTH` on a public deployment: whoever opens the page sees the `SharedSecret` in its form and can change the backend URL the setup posts it to. `/return` stays open so the catalog's form post always lands; `/health` stays open for the health check.
 
 A public domain is its own site, so the iframe runs cross-site just as with `lvh.me`. History is still in memory (the last 200 setups) — a redeploy forgets it.
 

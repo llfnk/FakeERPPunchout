@@ -10,8 +10,8 @@
  *
  *   npm start                          # then open http://lvh.me:8095
  *
- * Settings come from the environment (npm start reads .env). See README.md for every ERP_* variable.
- * The SharedSecret is never written into the page: the request shown there has it masked.
+ * Settings come from the environment (npm start reads .env) and can all be changed on the page, the
+ * SharedSecret too. See README.md for every ERP_* variable. The request shown on the page has it masked.
  */
 import { createServer } from 'node:http'
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
@@ -23,7 +23,7 @@ const PUBLIC_URL = (process.env.ERP_PUBLIC_URL || `http://lvh.me:${PORT}`).repla
 const BASIC_AUTH = process.env.ERP_BASIC_AUTH || ''
 const HISTORY_LIMIT = 200
 
-/** The last settings used; the secret stays here and never goes into a page. */
+/** The last settings used; the form starts from them. */
 const settings = {
   apiUrl: process.env.ERP_API_URL ?? '',
   partnerUuid: process.env.ERP_PARTNER_UUID ?? '',
@@ -123,6 +123,7 @@ const page = (title, body) => `<!doctype html><html lang="en"><head><meta charse
   .actions { grid-column: 1 / -1; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   button, a.button { font: inherit; padding: 8px 14px; border: 0; border-radius: 4px; background: #f0b429; color: #1d2733; cursor: pointer; text-decoration: none; font-weight: 600; }
   button.secondary { background: #dde3ea; font-weight: 400; }
+  .secret { display: flex; gap: 6px; } .secret input { flex: 1; min-width: 0; } .secret button { padding: 6px 10px; }
   .hint { font-size: 12px; color: #6b7a8a; }
   .ok { color: #1a7f37; font-weight: 600; } .bad { color: #b42318; font-weight: 600; }
   pre { margin: 0; white-space: pre-wrap; word-break: break-all; background: #f6f8fa; padding: 12px; border-radius: 6px; font-size: 12px; max-height: 360px; overflow: auto; }
@@ -135,7 +136,6 @@ const page = (title, body) => `<!doctype html><html lang="en"><head><meta charse
 function settingsForm() {
   const s = settings
   const field = (name, label, value, extra = '') => `<label>${html(label)}<input name="${name}" value="${html(value)}" ${extra}></label>`
-  const secretState = s.secret ? 'set — leave empty to keep it' : 'not set'
   return `<form class="settings" method="post" action="/setup">
     ${field('apiUrl', 'Backend (API origin)', s.apiUrl, 'required')}
     ${field('partnerUuid', 'Partner uuid — empty = shared /cxml/setup', s.partnerUuid)}
@@ -144,7 +144,7 @@ function settingsForm() {
     ${field('sender', 'Sender identity — empty = From', s.sender)}
     ${field('duns', 'DUNS (optional, sent as a second From credential)', s.duns)}
     ${field('to', 'To identity', s.to, 'required')}
-    <label>SharedSecret (${secretState})<input name="secret" type="password" autocomplete="off" placeholder="${s.secret ? '••••••••' : 'or set ERP_SHARED_SECRET'}"></label>
+    <label>SharedSecret<span class="secret"><input name="secret" type="password" autocomplete="off" value="${html(s.secret)}" required><button type="button" class="secondary" onclick="const i = this.previousElementSibling; i.type = i.type === 'password' ? 'text' : 'password'; this.textContent = i.type === 'password' ? 'show' : 'hide'">show</button></span></label>
     ${field('userEmail', 'Operator e-mail (UserEmail)', s.userEmail)}
     ${field('userName', 'Operator name (UserFullName)', s.userName)}
     <label>Operation<select name="operation">${['create', 'edit', 'inspect'].map(o => `<option${o === s.operation ? ' selected' : ''}>${o}</option>`).join('')}</select></label>
@@ -232,11 +232,9 @@ function send(res, status, body, type = 'text/html; charset=utf-8') {
 
 async function runSetup(form) {
   for (const key of Object.keys(settings)) {
-    if (key === 'secret') continue
-    if (form.has(key)) settings[key] = form.get(key).trim()
+    // the secret is taken as typed: surrounding spaces may be part of it
+    if (form.has(key)) settings[key] = key === 'secret' ? form.get(key) : form.get(key).trim()
   }
-  const secret = form.get('secret')
-  if (secret) settings.secret = secret
 
   const buyerCookie = `FAKE-ERP-${randomUUID()}`
   const xml = setupRequest(settings, buyerCookie)
